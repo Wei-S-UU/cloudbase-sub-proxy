@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, Response, abort
+from flask import Flask, Response, abort, request
 
 app = Flask(__name__)
 
@@ -9,11 +9,43 @@ UPSTREAM_TEMPLATE = os.environ.get(
     "https://hg.keydosm.us/s/ap.download/true/{id}"
 )
 
+# 常见订阅客户端
+SUBSCRIPTION_CLIENTS = [
+    "shadowrocket",
+    "clash",
+    "clashmeta",
+    "stash",
+    "surge",
+    "quantumult",
+    "quantumult x",
+    "sing-box",
+    "v2ray",
+    "v2rayng",
+    "nekoray",
+    "hiddify",
+]
+
 @app.route("/s/<path:sub_id>", methods=["GET"])
 def subscription(sub_id):
     if not sub_id:
         abort(404)
 
+    user_agent = request.headers.get("User-Agent", "").lower()
+
+    # 浏览器访问：显示创建成功
+    is_browser = (
+        "mozilla" in user_agent
+        and not any(client in user_agent for client in SUBSCRIPTION_CLIENTS)
+    )
+
+    if is_browser:
+        return Response(
+            "创建成功",
+            status=200,
+            content_type="text/plain; charset=utf-8"
+        )
+
+    # 订阅客户端访问：返回原订阅
     url = UPSTREAM_TEMPLATE.format(id=sub_id)
 
     try:
@@ -21,21 +53,19 @@ def subscription(sub_id):
             url,
             timeout=20,
             headers={
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent": user_agent or "Mozilla/5.0"
             }
         )
 
         r.raise_for_status()
 
-        content_type = r.headers.get(
-            "Content-Type",
-            "text/plain; charset=utf-8"
-        )
-
         return Response(
             r.content,
-            status=r.status_code,
-            content_type=content_type
+            status=200,
+            content_type=r.headers.get(
+                "Content-Type",
+                "text/plain; charset=utf-8"
+            )
         )
 
     except requests.RequestException:
@@ -44,7 +74,7 @@ def subscription(sub_id):
 
 @app.route("/", methods=["GET"])
 def index():
-    return "CloudBase subscription proxy is running."
+    return "创建成功"
 
 
 if __name__ == "__main__":
