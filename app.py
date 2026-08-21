@@ -15,7 +15,6 @@ SUBSCRIPTION_CLIENTS = [
     "stash",
     "surge",
     "quantumult",
-    "quantumult x",
     "sing-box",
     "v2ray",
     "v2rayng",
@@ -31,7 +30,7 @@ def load_subscriptions():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {}
 
 
@@ -46,11 +45,7 @@ def generate_id():
 
 @app.route("/")
 def index():
-    return """
-https:/#/test-2393204-1312544453.ap-guangzhou.run.tcloudbase.#com/s/yGx65WTf
-
-填入软件中（将上行的 两个# 去除掉 账号就是网址，不是打开网站里的内容）
-"""
+    return "创建成功"
 
 
 @app.route("/admin", methods=["GET", "POST"])
@@ -62,7 +57,7 @@ def admin():
 
         upstream_url = request.form.get("url", "").strip()
 
-        if not upstream_url.startswith(("http://", "https://")):
+        if not upstream_url.startswith("http"):
             return "链接格式错误", 400
 
         sub_id = generate_id()
@@ -80,110 +75,67 @@ def admin():
 
     for sub_id, upstream_url in subscriptions.items():
 
-        proxy_url = (
-            request.host_url.rstrip("/")
-            + "/s/"
-            + sub_id
-        )
+        proxy_url = request.host_url.rstrip("/") + "/s/" + sub_id
 
         rows += f"""
         <tr>
             <td>{sub_id}</td>
-
             <td>
-                <input
-                    value="{proxy_url}"
-                    readonly
-                    style="width:420px"
-                >
+                <input value="{proxy_url}" readonly style="width:420px">
             </td>
-
             <td>
-                <form
-                    method="POST"
-                    action="/admin/delete/{sub_id}"
-                >
-                    <button type="submit">
-                        删除
-                    </button>
+                <form method="POST" action="/admin/delete/{sub_id}">
+                    <button type="submit">删除</button>
                 </form>
             </td>
         </tr>
         """
 
     return f"""
-<!DOCTYPE html>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Subscription Manager</title>
+    </head>
 
-<html>
+    <body style="max-width:900px;margin:50px auto;font-family:Arial">
 
-<head>
+        <h2>订阅管理</h2>
 
-<meta charset="UTF-8">
+        <form method="POST">
 
-<title>Subscription Manager</title>
+            <input
+                type="text"
+                name="url"
+                placeholder="粘贴原始订阅链接"
+                style="width:600px;padding:10px"
+                required
+            >
 
-</head>
+            <button type="submit" style="padding:10px 20px">
+                生成
+            </button>
 
-<body
-style="
-max-width:1000px;
-margin:50px auto;
-font-family:Arial;
-">
+        </form>
 
-<h2>订阅管理</h2>
+        <hr>
 
-<form method="POST">
+        <table border="1" cellpadding="10" cellspacing="0" width="100%">
 
-<input
-type="text"
-name="url"
-placeholder="粘贴原始订阅链接"
-style="
-width:650px;
-padding:10px;
-"
-required
->
+            <tr>
+                <th>ID</th>
+                <th>CloudBase 订阅地址</th>
+                <th>操作</th>
+            </tr>
 
-<button
-type="submit"
-style="
-padding:10px 20px;
-"
->
-生成
-</button>
+            {rows}
 
-</form>
+        </table>
 
-<hr>
-
-<table
-border="1"
-cellpadding="10"
-cellspacing="0"
-width="100%"
->
-
-<tr>
-
-<th>ID</th>
-
-<th>CloudBase 订阅地址</th>
-
-<th>操作</th>
-
-</tr>
-
-{rows}
-
-</table>
-
-</body>
-
-</html>
-"""
+    </body>
+    </html>
+    """
 
 
 @app.route("/admin/delete/<sub_id>", methods=["POST"])
@@ -192,9 +144,7 @@ def delete_subscription(sub_id):
     subscriptions = load_subscriptions()
 
     if sub_id in subscriptions:
-
         del subscriptions[sub_id]
-
         save_subscriptions(subscriptions)
 
     return redirect(url_for("admin"))
@@ -208,10 +158,7 @@ def subscription(sub_id):
     if sub_id not in subscriptions:
         abort(404)
 
-    user_agent = request.headers.get(
-        "User-Agent",
-        ""
-    ).lower()
+    user_agent = request.headers.get("User-Agent", "").lower()
 
     is_subscription_client = any(
         client in user_agent
@@ -220,14 +167,12 @@ def subscription(sub_id):
 
     # 普通浏览器访问
     if not is_subscription_client:
-
         return Response(
             "创建成功",
             status=200,
             content_type="text/plain; charset=utf-8"
         )
 
-    # 订阅客户端访问
     upstream_url = subscriptions[sub_id]
 
     try:
@@ -252,18 +197,12 @@ def subscription(sub_id):
         )
 
     except requests.RequestException:
-
         abort(502)
 
 
 if __name__ == "__main__":
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            "80"
-        )
-    )
+    port = int(os.environ.get("PORT", "80"))
 
     app.run(
         host="0.0.0.0",
