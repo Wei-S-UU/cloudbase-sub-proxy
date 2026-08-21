@@ -1,15 +1,13 @@
 import os
+import json
+import secrets
 import requests
-from flask import Flask, Response, abort, request
+from flask import Flask, Response, abort, request, redirect, url_for
 
 app = Flask(__name__)
 
-UPSTREAM_TEMPLATE = os.environ.get(
-    "UPSTREAM_TEMPLATE",
-    "https://hg.keydosm.us/s/ap.download/true/{id}"
-)
+DATA_FILE = "subscriptions.json"
 
-# 常见订阅客户端
 SUBSCRIPTION_CLIENTS = [
     "shadowrocket",
     "clash",
@@ -17,7 +15,6 @@ SUBSCRIPTION_CLIENTS = [
     "stash",
     "surge",
     "quantumult",
-    "quantumult x",
     "sing-box",
     "v2ray",
     "v2rayng",
@@ -25,35 +22,166 @@ SUBSCRIPTION_CLIENTS = [
     "hiddify",
 ]
 
-@app.route("/s/<path:sub_id>", methods=["GET"])
+
+def load_subscriptions():
+    if not os.path.exists(DATA_FILE):
+        return {}
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def save_subscriptions(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def generate_id():
+    return secrets.token_urlsafe(8)
+
+
+@app.route("/")
+def index():
+    return "创建成功"
+
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin():
+
+    subscriptions = load_subscriptions()
+
+    if request.method == "POST":
+
+        upstream_url = request.form.get("url", "").strip()
+
+        if not upstream_url.startswith("http"):
+            return "链接格式错误", 400
+
+        sub_id = generate_id()
+
+        while sub_id in subscriptions:
+            sub_id = generate_id()
+
+        subscriptions[sub_id] = upstream_url
+
+        save_subscriptions(subscriptions)
+
+        return redirect(url_for("admin"))
+
+    rows = ""
+
+    for sub_id, upstream_url in subscriptions.items():
+
+        proxy_url = request.host_url.rstrip("/") + "/s/" + sub_id
+
+        rows += f"""
+        <tr>
+            <td>{sub_id}</td>
+            <td>
+                <input value="{proxy_url}" readonly style="width:420px">
+            </td>
+            <td>
+                <form method="POST" action="/admin/delete/{sub_id}">
+                    <button type="submit">删除</button>
+                </form>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Subscription Manager</title>
+    </head>
+
+    <body style="max-width:900px;margin:50px auto;font-family:Arial">
+
+        <h2>订阅管理</h2>
+
+        <form method="POST">
+
+            <input
+                type="text"
+                name="url"
+                placeholder="粘贴原始订阅链接"
+                style="width:600px;padding:10px"
+                required
+            >
+
+            <button type="submit" style="padding:10px 20px">
+                生成
+            </button>
+
+        </form>
+
+        <hr>
+
+        <table border="1" cellpadding="10" cellspacing="0" width="100%">
+
+            <tr>
+                <th>ID</th>
+                <th>CloudBase 订阅地址</th>
+                <th>操作</th>
+            </tr>
+
+            {rows}
+
+        </table>
+
+    </body>
+    </html>
+    """
+
+
+@app.route("/admin/delete/<sub_id>", methods=["POST"])
+def delete_subscription(sub_id):
+
+    subscriptions = load_subscriptions()
+
+    if sub_id in subscriptions:
+        del subscriptions[sub_id]
+        save_subscriptions(subscriptions)
+
+    return redirect(url_for("admin"))
+
+
+@app.route("/s/<sub_id>", methods=["GET"])
 def subscription(sub_id):
-    if not sub_id:
+
+    subscriptions = load_subscriptions()
+
+    if sub_id not in subscriptions:
         abort(404)
 
     user_agent = request.headers.get("User-Agent", "").lower()
 
-    # 浏览器访问：显示创建成功
-    is_browser = (
-        "mozilla" in user_agent
-        and not any(client in user_agent for client in SUBSCRIPTION_CLIENTS)
+    is_subscription_client = any(
+        client in user_agent
+        for client in SUBSCRIPTION_CLIENTS
     )
 
-    if is_browser:
+    # 普通浏览器访问
+    if not is_subscription_client:
         return Response(
             "创建成功",
             status=200,
             content_type="text/plain; charset=utf-8"
         )
 
-    # 订阅客户端访问：返回原订阅
-    url = UPSTREAM_TEMPLATE.format(id=sub_id)
+    upstream_url = subscriptions[sub_id]
 
     try:
+
         r = requests.get(
-            url,
+            upstream_url,
             timeout=20,
             headers={
-                "User-Agent": user_agent or "Mozilla/5.0"
+                "User-Agent": user_agent
             }
         )
 
@@ -72,11 +200,11 @@ def subscription(sub_id):
         abort(502)
 
 
-@app.route("/", methods=["GET"])
-def index():
-    return "创建成功"
-
-
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", "80"))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
