@@ -15,6 +15,7 @@ SUBSCRIPTION_CLIENTS = [
     "stash",
     "surge",
     "quantumult",
+    "quantumult x",
     "sing-box",
     "v2ray",
     "v2rayng",
@@ -75,33 +76,120 @@ def admin():
 
     for sub_id, upstream_url in subscriptions.items():
 
+        # 正常 CloudBase 订阅链接
         proxy_url = request.host_url.rstrip("/") + "/s/" + sub_id
+
+        # 生成你要求的文字变式
+        # https://xxx.com/s/xxx
+        # ↓
+        # https:/#/xxx.#com/s/xxx
+        display_url = proxy_url.replace(
+            "://",
+            ":/#/"
+        ).replace(
+            ".com/",
+            ".#com/"
+        )
 
         rows += f"""
         <tr>
-            <td>{sub_id}</td>
+
             <td>
-                <input value="{proxy_url}" readonly style="width:420px">
+                {sub_id}
             </td>
+
             <td>
-                <form method="POST" action="/admin/delete/{sub_id}">
-                    <button type="submit">删除</button>
+
+                <div>
+                    <strong>正常链接：</strong>
+                </div>
+
+                <input
+                    value="{proxy_url}"
+                    readonly
+                    style="width:420px;padding:6px"
+                >
+
+                <br><br>
+
+                <div>
+                    <strong>软件填写格式：</strong>
+                </div>
+
+                <div
+                    style="
+                    margin-top:5px;
+                    padding:8px;
+                    background:#f5f5f5;
+                    word-break:break-all;
+                    "
+                >
+                    {display_url}
+                </div>
+
+                <div
+                    style="
+                    margin-top:8px;
+                    font-size:14px;
+                    color:#555;
+                    "
+                >
+                    填入软件中（将上行的 两个# 去除掉
+                    账号就是网址，不是打开网站里的内容）
+                </div>
+
+            </td>
+
+            <td>
+
+                <form
+                    method="POST"
+                    action="/admin/delete/{sub_id}"
+                >
+
+                    <button
+                        type="submit"
+                        style="
+                        padding:6px 12px;
+                        cursor:pointer;
+                        "
+                    >
+                        删除
+                    </button>
+
                 </form>
+
             </td>
+
         </tr>
         """
 
     return f"""
     <!DOCTYPE html>
+
     <html>
+
     <head>
+
         <meta charset="UTF-8">
-        <title>Subscription Manager</title>
+
+        <title>
+            Subscription Manager
+        </title>
+
     </head>
 
-    <body style="max-width:900px;margin:50px auto;font-family:Arial">
+    <body
+        style="
+        max-width:1000px;
+        margin:50px auto;
+        font-family:Arial;
+        "
+    >
 
-        <h2>订阅管理</h2>
+        <h2>
+            订阅管理
+        </h2>
 
         <form method="POST">
 
@@ -109,11 +197,20 @@ def admin():
                 type="text"
                 name="url"
                 placeholder="粘贴原始订阅链接"
-                style="width:600px;padding:10px"
+                style="
+                width:650px;
+                padding:10px;
+                "
                 required
             >
 
-            <button type="submit" style="padding:10px 20px">
+            <button
+                type="submit"
+                style="
+                padding:10px 20px;
+                cursor:pointer;
+                "
+            >
                 生成
             </button>
 
@@ -121,12 +218,27 @@ def admin():
 
         <hr>
 
-        <table border="1" cellpadding="10" cellspacing="0" width="100%">
+        <table
+            border="1"
+            cellpadding="10"
+            cellspacing="0"
+            width="100%"
+        >
 
             <tr>
-                <th>ID</th>
-                <th>CloudBase 订阅地址</th>
-                <th>操作</th>
+
+                <th>
+                    ID
+                </th>
+
+                <th>
+                    CloudBase 订阅地址
+                </th>
+
+                <th>
+                    操作
+                </th>
+
             </tr>
 
             {rows}
@@ -134,23 +246,34 @@ def admin():
         </table>
 
     </body>
+
     </html>
     """
 
 
-@app.route("/admin/delete/<sub_id>", methods=["POST"])
+@app.route(
+    "/admin/delete/<sub_id>",
+    methods=["POST"]
+)
 def delete_subscription(sub_id):
 
     subscriptions = load_subscriptions()
 
     if sub_id in subscriptions:
+
         del subscriptions[sub_id]
+
         save_subscriptions(subscriptions)
 
-    return redirect(url_for("admin"))
+    return redirect(
+        url_for("admin")
+    )
 
 
-@app.route("/s/<sub_id>", methods=["GET"])
+@app.route(
+    "/s/<sub_id>",
+    methods=["GET"]
+)
 def subscription(sub_id):
 
     subscriptions = load_subscriptions()
@@ -158,7 +281,10 @@ def subscription(sub_id):
     if sub_id not in subscriptions:
         abort(404)
 
-    user_agent = request.headers.get("User-Agent", "").lower()
+    user_agent = request.headers.get(
+        "User-Agent",
+        ""
+    ).lower()
 
     is_subscription_client = any(
         client in user_agent
@@ -167,12 +293,14 @@ def subscription(sub_id):
 
     # 普通浏览器访问
     if not is_subscription_client:
+
         return Response(
             "创建成功",
             status=200,
             content_type="text/plain; charset=utf-8"
         )
 
+    # 订阅客户端访问
     upstream_url = subscriptions[sub_id]
 
     try:
@@ -197,12 +325,18 @@ def subscription(sub_id):
         )
 
     except requests.RequestException:
+
         abort(502)
 
 
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", "80"))
+    port = int(
+        os.environ.get(
+            "PORT",
+            "80"
+        )
+    )
 
     app.run(
         host="0.0.0.0",
