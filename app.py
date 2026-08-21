@@ -1,7 +1,8 @@
 import os
 import json
-import secrets
+import re
 import requests
+from urllib.parse import urlparse
 from flask import Flask, Response, abort, request, redirect, url_for
 
 app = Flask(__name__)
@@ -31,7 +32,7 @@ def load_subscriptions():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception:
         return {}
 
 
@@ -40,8 +41,34 @@ def save_subscriptions(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def generate_id():
-    return secrets.token_urlsafe(8)
+def extract_sub_id(url):
+    """
+    从原始订阅链接提取最后一段 ID。
+
+    例如：
+    https://hg.keydosm.us/s/ap.download/true/n4xcbk1awb2q39qg
+
+    返回：
+    n4xcbk1awb2q39qg
+    """
+
+    parsed = urlparse(url)
+
+    path = parsed.path.rstrip("/")
+
+    if not path:
+        return None
+
+    sub_id = path.split("/")[-1]
+
+    if not sub_id:
+        return None
+
+    # 防止异常字符进入 URL 路径
+    if not re.match(r"^[A-Za-z0-9_-]+$", sub_id):
+        return None
+
+    return sub_id
 
 
 @app.route("/")
@@ -58,14 +85,16 @@ def admin():
 
         upstream_url = request.form.get("url", "").strip()
 
-        if not upstream_url.startswith("http"):
+        if not upstream_url.startswith(("http://", "https://")):
             return "链接格式错误", 400
 
-        sub_id = generate_id()
+        # 从原链接提取最后一段
+        sub_id = extract_sub_id(upstream_url)
 
-        while sub_id in subscriptions:
-            sub_id = generate_id()
+        if not sub_id:
+            return "无法提取订阅链接最后一段 ID", 400
 
+        # 保存映射
         subscriptions[sub_id] = upstream_url
 
         save_subscriptions(subscriptions)
@@ -74,22 +103,27 @@ def admin():
 
     rows = ""
 
+    base_url = request.host_url.rstrip("/")
+
     for sub_id, upstream_url in subscriptions.items():
 
-        # 正常 CloudBase 订阅链接
-        proxy_url = request.host_url.rstrip("/") + "/s/" + sub_id
+        # 正常 CloudBase 订阅地址
+        proxy_url = f"{base_url}/s/{sub_id}"
 
-        # 生成你要求的文字变式
-        # https://xxx.com/s/xxx
-        # ↓
-        # https:/#/xxx.#com/s/xxx
+        # 生成两个 # 的展示格式
         display_url = proxy_url.replace(
             "://",
-            ":/#/"
-        ).replace(
-            ".com/",
-            ".#com/"
+            ":/#/",
+            1
         )
+
+        # 只替换域名中的 .com
+        if ".com/" in display_url:
+            display_url = display_url.replace(
+                ".com/",
+                ".#com/",
+                1
+            )
 
         rows += f"""
         <tr>
@@ -101,13 +135,29 @@ def admin():
             <td>
 
                 <div>
-                    <strong>正常链接：</strong>
+                    <strong>原始订阅：</strong>
+                </div>
+
+                <div
+                    style="
+                    word-break:break-all;
+                    margin:5px 0 15px 0;
+                    "
+                >
+                    {upstream_url}
+                </div>
+
+                <div>
+                    <strong>CloudBase 订阅：</strong>
                 </div>
 
                 <input
                     value="{proxy_url}"
                     readonly
-                    style="width:420px;padding:6px"
+                    style="
+                    width:90%;
+                    padding:7px;
+                    "
                 >
 
                 <br><br>
@@ -119,7 +169,7 @@ def admin():
                 <div
                     style="
                     margin-top:5px;
-                    padding:8px;
+                    padding:10px;
                     background:#f5f5f5;
                     word-break:break-all;
                     "
@@ -173,23 +223,19 @@ def admin():
 
         <meta charset="UTF-8">
 
-        <title>
-            Subscription Manager
-        </title>
+        <title>Subscription Manager</title>
 
     </head>
 
     <body
         style="
-        max-width:1000px;
+        max-width:1100px;
         margin:50px auto;
         font-family:Arial;
         "
     >
 
-        <h2>
-            订阅管理
-        </h2>
+        <h2>订阅管理</h2>
 
         <form method="POST">
 
@@ -198,7 +244,7 @@ def admin():
                 name="url"
                 placeholder="粘贴原始订阅链接"
                 style="
-                width:650px;
+                width:70%;
                 padding:10px;
                 "
                 required
@@ -232,7 +278,7 @@ def admin():
                 </th>
 
                 <th>
-                    CloudBase 订阅地址
+                    订阅信息
                 </th>
 
                 <th>
@@ -265,9 +311,7 @@ def delete_subscription(sub_id):
 
         save_subscriptions(subscriptions)
 
-    return redirect(
-        url_for("admin")
-    )
+    return redirect(url_for("admin"))
 
 
 @app.route(
@@ -286,6 +330,7 @@ def subscription(sub_id):
         ""
     ).lower()
 
+    # 判断是否为订阅客户端
     is_subscription_client = any(
         client in user_agent
         for client in SUBSCRIPTION_CLIENTS
@@ -300,7 +345,7 @@ def subscription(sub_id):
             content_type="text/plain; charset=utf-8"
         )
 
-    # 订阅客户端访问
+    # 获取原始订阅
     upstream_url = subscriptions[sub_id]
 
     try:
