@@ -2,55 +2,72 @@ import os
 import json
 import re
 import requests
+
+from io import BytesIO
 from urllib.parse import urlparse
-from flask import Flask, Response, abort, request, redirect, url_for
+
+from flask import (
+    Flask,
+    Response,
+    abort,
+    request,
+    send_file
+)
 
 app = Flask(__name__)
 
 DATA_FILE = "subscriptions.json"
 
-SUBSCRIPTION_CLIENTS = [
-    "shadowrocket",
-    "clash",
-    "clashmeta",
-    "stash",
-    "surge",
-    "quantumult",
-    "quantumult x",
-    "sing-box",
-    "v2ray",
-    "v2rayng",
-    "nekoray",
-    "hiddify",
-]
 
+# =========================
+# 读取订阅数据
+# =========================
 
 def load_subscriptions():
+
     if not os.path.exists(DATA_FILE):
         return {}
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             return json.load(f)
+
     except Exception:
+
         return {}
 
 
-def save_subscriptions(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# =========================
+# 保存订阅数据
+# =========================
 
+def save_subscriptions(data):
+
+    with open(
+        DATA_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            data,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+# =========================
+# 提取原链接最后一段
+# =========================
 
 def extract_sub_id(url):
-    """
-    从原始订阅链接提取最后一段 ID。
-
-    例如：
-    https://hg.keydosm.us/s/ap.download/true/n4xcbk1awb2q39qg
-
-    返回：
-    n4xcbk1awb2q39qg
-    """
 
     parsed = urlparse(url)
 
@@ -64,255 +81,261 @@ def extract_sub_id(url):
     if not sub_id:
         return None
 
-    # 防止异常字符进入 URL 路径
-    if not re.match(r"^[A-Za-z0-9_-]+$", sub_id):
+    # 只允许常见 URL ID 字符
+    if not re.match(
+        r"^[A-Za-z0-9_-]+$",
+        sub_id
+    ):
         return None
 
     return sub_id
 
 
+# =========================
+# 首页
+# =========================
+
 @app.route("/")
 def index():
+
     return "创建成功"
 
 
-@app.route("/admin", methods=["GET", "POST"])
+# =========================
+# 管理后台
+# =========================
+
+@app.route(
+    "/admin",
+    methods=["GET", "POST"]
+)
 def admin():
+
+    # =====================
+    # 打开后台
+    # =====================
+
+    if request.method == "GET":
+
+        return """
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>Subscription Generator</title>
+
+</head>
+
+<body
+style="
+margin:0;
+background:#f5f5f5;
+font-family:Arial,sans-serif;
+">
+
+<div
+style="
+max-width:700px;
+margin:80px auto;
+background:white;
+padding:35px;
+border-radius:12px;
+box-shadow:0 2px 12px rgba(0,0,0,0.08);
+">
+
+<h2>
+订阅生成器
+</h2>
+
+<p
+style="
+color:#666;
+"
+>
+输入原始订阅链接，生成订阅文件。
+</p>
+
+<form method="POST">
+
+<input
+type="url"
+name="url"
+placeholder="粘贴原始订阅链接"
+required
+style="
+width:100%;
+box-sizing:border-box;
+padding:12px;
+font-size:15px;
+border:1px solid #ccc;
+border-radius:6px;
+margin-bottom:15px;
+"
+>
+
+<button
+type="submit"
+style="
+width:100%;
+padding:12px;
+font-size:15px;
+border:0;
+border-radius:6px;
+cursor:pointer;
+"
+>
+生成并下载
+</button>
+
+</form>
+
+</div>
+
+</body>
+
+</html>
+"""
+
+
+    # =====================
+    # 获取原始链接
+    # =====================
+
+    upstream_url = request.form.get(
+        "url",
+        ""
+    ).strip()
+
+
+    if not upstream_url.startswith(
+        ("http://", "https://")
+    ):
+
+        return (
+            "链接格式错误",
+            400
+        )
+
+
+    # =====================
+    # 提取 ID
+    # =====================
+
+    sub_id = extract_sub_id(
+        upstream_url
+    )
+
+
+    if not sub_id:
+
+        return (
+            "无法提取原始链接最后一段 ID",
+            400
+        )
+
+
+    # =====================
+    # 保存映射
+    # =====================
 
     subscriptions = load_subscriptions()
 
-    if request.method == "POST":
+    subscriptions[sub_id] = upstream_url
 
-        upstream_url = request.form.get("url", "").strip()
+    save_subscriptions(
+        subscriptions
+    )
 
-        if not upstream_url.startswith(("http://", "https://")):
-            return "链接格式错误", 400
 
-        # 从原链接提取最后一段
-        sub_id = extract_sub_id(upstream_url)
-
-        if not sub_id:
-            return "无法提取订阅链接最后一段 ID", 400
-
-        # 保存映射
-        subscriptions[sub_id] = upstream_url
-
-        save_subscriptions(subscriptions)
-
-        return redirect(url_for("admin"))
-
-    rows = ""
+    # =====================
+    # 获取当前 CloudBase 地址
+    # =====================
 
     base_url = request.host_url.rstrip("/")
 
-    for sub_id, upstream_url in subscriptions.items():
+    proxy_url = (
+        base_url
+        + "/s/"
+        + sub_id
+    )
 
-        # 正常 CloudBase 订阅地址
-        proxy_url = f"{base_url}/s/{sub_id}"
 
-        # 生成两个 # 的展示格式
-        display_url = proxy_url.replace(
-            "://",
-            ":/#/",
+    # =====================
+    # 生成文字变式
+    #
+    # https://xxx.com/s/xxx
+    #
+    # ↓
+    #
+    # https:/#/xxx.#com/s/xxx
+    # =====================
+
+    display_url = proxy_url.replace(
+        "://",
+        ":/#/",
+        1
+    )
+
+
+    if ".com/" in display_url:
+
+        display_url = display_url.replace(
+            ".com/",
+            ".#com/",
             1
         )
 
-        # 只替换域名中的 .com
-        if ".com/" in display_url:
-            display_url = display_url.replace(
-                ".com/",
-                ".#com/",
-                1
-            )
 
-        rows += f"""
-        <tr>
+    # =====================
+    # TXT 内容
+    # =====================
 
-            <td>
-                {sub_id}
-            </td>
+    txt_content = (
+        "CloudBase订阅地址：\n"
+        f"{proxy_url}\n\n"
 
-            <td>
+        "软件填写格式：\n"
+        f"{display_url}\n\n"
 
-                <div>
-                    <strong>原始订阅：</strong>
-                </div>
-
-                <div
-                    style="
-                    word-break:break-all;
-                    margin:5px 0 15px 0;
-                    "
-                >
-                    {upstream_url}
-                </div>
-
-                <div>
-                    <strong>CloudBase 订阅：</strong>
-                </div>
-
-                <input
-                    value="{proxy_url}"
-                    readonly
-                    style="
-                    width:90%;
-                    padding:7px;
-                    "
-                >
-
-                <br><br>
-
-                <div>
-                    <strong>软件填写格式：</strong>
-                </div>
-
-                <div
-                    style="
-                    margin-top:5px;
-                    padding:10px;
-                    background:#f5f5f5;
-                    word-break:break-all;
-                    "
-                >
-                    {display_url}
-                </div>
-
-                <div
-                    style="
-                    margin-top:8px;
-                    font-size:14px;
-                    color:#555;
-                    "
-                >
-                    填入软件中（将上行的 两个# 去除掉
-                    账号就是网址，不是打开网站里的内容）
-                </div>
-
-            </td>
-
-            <td>
-
-                <form
-                    method="POST"
-                    action="/admin/delete/{sub_id}"
-                >
-
-                    <button
-                        type="submit"
-                        style="
-                        padding:6px 12px;
-                        cursor:pointer;
-                        "
-                    >
-                        删除
-                    </button>
-
-                </form>
-
-            </td>
-
-        </tr>
-        """
-
-    return f"""
-    <!DOCTYPE html>
-
-    <html>
-
-    <head>
-
-        <meta charset="UTF-8">
-
-        <title>Subscription Manager</title>
-
-    </head>
-
-    <body
-        style="
-        max-width:1100px;
-        margin:50px auto;
-        font-family:Arial;
-        "
-    >
-
-        <h2>订阅管理</h2>
-
-        <form method="POST">
-
-            <input
-                type="text"
-                name="url"
-                placeholder="粘贴原始订阅链接"
-                style="
-                width:70%;
-                padding:10px;
-                "
-                required
-            >
-
-            <button
-                type="submit"
-                style="
-                padding:10px 20px;
-                cursor:pointer;
-                "
-            >
-                生成
-            </button>
-
-        </form>
-
-        <hr>
-
-        <table
-            border="1"
-            cellpadding="10"
-            cellspacing="0"
-            width="100%"
-        >
-
-            <tr>
-
-                <th>
-                    ID
-                </th>
-
-                <th>
-                    订阅信息
-                </th>
-
-                <th>
-                    操作
-                </th>
-
-            </tr>
-
-            {rows}
-
-        </table>
-
-    </body>
-
-    </html>
-    """
+        "填入软件中（将上行的 两个# 去除掉 "
+        "账号就是网址，不是打开网站里的内容）\n"
+    )
 
 
-@app.route(
-    "/admin/delete/<sub_id>",
-    methods=["POST"]
-)
-def delete_subscription(sub_id):
+    # =====================
+    # 内存生成 TXT
+    # =====================
 
-    subscriptions = load_subscriptions()
+    file_data = BytesIO(
+        txt_content.encode("utf-8")
+    )
 
-    if sub_id in subscriptions:
+    file_data.seek(0)
 
-        del subscriptions[sub_id]
 
-        save_subscriptions(subscriptions)
+    filename = (
+        f"{sub_id}.txt"
+    )
 
-    return redirect(url_for("admin"))
 
+    return send_file(
+        file_data,
+        mimetype="text/plain; charset=utf-8",
+        as_attachment=True,
+        download_name=filename
+    )
+
+
+# =========================
+# 订阅接口
+# =========================
 
 @app.route(
     "/s/<sub_id>",
@@ -322,31 +345,24 @@ def subscription(sub_id):
 
     subscriptions = load_subscriptions()
 
+
+    # =====================
+    # 检查 ID
+    # =====================
+
     if sub_id not in subscriptions:
+
         abort(404)
 
-    user_agent = request.headers.get(
-        "User-Agent",
-        ""
-    ).lower()
 
-    # 判断是否为订阅客户端
-    is_subscription_client = any(
-        client in user_agent
-        for client in SUBSCRIPTION_CLIENTS
-    )
+    upstream_url = subscriptions[
+        sub_id
+    ]
 
-    # 普通浏览器访问
-    if not is_subscription_client:
 
-        return Response(
-            "创建成功",
-            status=200,
-            content_type="text/plain; charset=utf-8"
-        )
-
-    # 获取原始订阅
-    upstream_url = subscriptions[sub_id]
+    # =====================
+    # 请求原始订阅
+    # =====================
 
     try:
 
@@ -354,25 +370,73 @@ def subscription(sub_id):
             upstream_url,
             timeout=20,
             headers={
-                "User-Agent": user_agent
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "Chrome/120.0 Safari/537.36"
+                )
             }
         )
 
+
         r.raise_for_status()
 
-        return Response(
+
+        # =====================
+        # 原样返回
+        # =====================
+
+        response = Response(
             r.content,
-            status=200,
-            content_type=r.headers.get(
-                "Content-Type",
-                "text/plain; charset=utf-8"
-            )
+            status=200
         )
 
-    except requests.RequestException:
 
-        abort(502)
+        # 保留上游 Content-Type
+        if r.headers.get(
+            "Content-Type"
+        ):
 
+            response.headers[
+                "Content-Type"
+            ] = r.headers[
+                "Content-Type"
+            ]
+
+        else:
+
+            response.headers[
+                "Content-Type"
+            ] = "text/plain; charset=utf-8"
+
+
+        # 防止缓存导致刷新拿到旧订阅
+        response.headers[
+            "Cache-Control"
+        ] = "no-store, no-cache, must-revalidate"
+
+
+        response.headers[
+            "Pragma"
+        ] = "no-cache"
+
+
+        return response
+
+
+    except requests.RequestException as e:
+
+        return Response(
+            "Upstream subscription request failed",
+            status=502,
+            content_type="text/plain; charset=utf-8"
+        )
+
+
+# =========================
+# 启动
+# =========================
 
 if __name__ == "__main__":
 
