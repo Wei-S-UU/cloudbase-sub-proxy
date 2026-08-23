@@ -1,11 +1,11 @@
 import os
 import json
 import re
+import time
 import requests
 
 from io import BytesIO
 from urllib.parse import urlparse
-from datetime import datetime, timezone, timedelta
 
 from flask import (
     Flask,
@@ -15,13 +15,51 @@ from flask import (
     send_file
 )
 
+from qcloud_cos import CosConfig
+from qcloud_cos import CosS3Client
+
+
 app = Flask(__name__)
 
-DATA_FILE = "subscriptions.json"
-EXPIRY_FILE = "subscription_expiry.json"
 
-# 订阅有效期：30天
-SUBSCRIPTION_DAYS = 30
+# =========================
+# COS 配置
+# =========================
+
+COS_SECRET_ID = os.environ.get(
+    "COS_SECRET_ID",
+    ""
+)
+
+COS_SECRET_KEY = os.environ.get(
+    "COS_SECRET_KEY",
+    ""
+)
+
+COS_REGION = os.environ.get(
+    "COS_REGION",
+    "ap-shanghai"
+)
+
+COS_BUCKET = os.environ.get(
+    "COS_BUCKET",
+    "7465-test-d9g7i55l98fd491bf-1432414508"
+)
+
+COS_FILE = "subscriptions.json"
+
+
+# =========================
+# 初始化 COS
+# =========================
+
+config = CosConfig(
+    Region=COS_REGION,
+    SecretId=COS_SECRET_ID,
+    SecretKey=COS_SECRET_KEY
+)
+
+cos_client = CosS3Client(config)
 
 
 # =========================
@@ -30,18 +68,22 @@ SUBSCRIPTION_DAYS = 30
 
 def load_subscriptions():
 
-    if not os.path.exists(DATA_FILE):
-        return {}
-
     try:
 
-        with open(
-            DATA_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
+        response = cos_client.get_object(
+            Bucket=COS_BUCKET,
+            Key=COS_FILE
+        )
 
-            return json.load(f)
+        content = response[
+            "Body"
+        ].get_raw_stream().read()
+
+        data = json.loads(
+            content.decode("utf-8")
+        )
+
+        return data
 
     except Exception:
 
@@ -54,140 +96,69 @@ def load_subscriptions():
 
 def save_subscriptions(data):
 
-    with open(
-        DATA_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
+    content = json.dumps(
+        data,
+        ensure_ascii=False,
+        indent=2
+    )
 
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-
-# =========================
-# 读取订阅有效期
-# =========================
-
-def load_expiry():
-
-    if not os.path.exists(EXPIRY_FILE):
-        return {}
-
-    try:
-
-        with open(
-            EXPIRY_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            return json.load(f)
-
-    except Exception:
-
-        return {}
-
-
-# =========================
-# 保存订阅有效期
-# =========================
-
-def save_expiry(data):
-
-    with open(
-        EXPIRY_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+    cos_client.put_object(
+        Bucket=COS_BUCKET,
+        Key=COS_FILE,
+        Body=content.encode("utf-8")
+    )
 
 
 # =========================
 # 清理超过30天的订阅
 # =========================
 
-def cleanup_expired_subscriptions():
+def cleanup_expired(subscriptions):
 
-    subscriptions = load_subscriptions()
-    expiry_data = load_expiry()
+    now = int(time.time())
 
-    now = datetime.now(timezone.utc)
-
-    changed = False
-    expiry_changed = False
+    expire_seconds = 30 * 24 * 60 * 60
 
     expired_ids = []
 
-    for sub_id in list(subscriptions.keys()):
 
-        # 如果没有有效期记录
-        # 保留原来的订阅，不影响旧数据
-        if sub_id not in expiry_data:
+    for sub_id, value in subscriptions.items():
+
+        # 兼容旧格式
+        if isinstance(
+            value,
+            str
+        ):
+
             continue
 
-        try:
 
-            created_at = datetime.fromisoformat(
-                expiry_data[sub_id]
+        created_at = value.get(
+            "created_at",
+            0
+        )
+
+
+        if (
+            now - created_at
+            >= expire_seconds
+        ):
+
+            expired_ids.append(
+                sub_id
             )
 
-        except Exception:
 
-            continue
-
-        expire_time = (
-            created_at
-            + timedelta(days=SUBSCRIPTION_DAYS)
-        )
-
-        if now >= expire_time:
-
-            expired_ids.append(sub_id)
-
-    # 删除过期订阅
     for sub_id in expired_ids:
 
-        if sub_id in subscriptions:
+        del subscriptions[
+            sub_id
+        ]
 
-            del subscriptions[sub_id]
-            changed = True
 
-        if sub_id in expiry_data:
-
-            del expiry_data[sub_id]
-            expiry_changed = True
-
-    # 清理已经不存在的有效期记录
-    for sub_id in list(expiry_data.keys()):
-
-        if sub_id not in subscriptions:
-
-            del expiry_data[sub_id]
-            expiry_changed = True
-
-    if changed:
-
-        save_subscriptions(
-            subscriptions
-        )
-
-    if expiry_changed:
-
-        save_expiry(
-            expiry_data
-        )
-
-    return subscriptions
+    return subscriptions, bool(
+        expired_ids
+    )
 
 
 # =========================
@@ -200,20 +171,27 @@ def extract_sub_id(url):
 
     path = parsed.path.rstrip("/")
 
+
     if not path:
+
         return None
+
 
     sub_id = path.split("/")[-1]
 
+
     if not sub_id:
+
         return None
 
-    # 只允许常见 URL ID 字符
+
     if not re.match(
         r"^[A-Za-z0-9_-]+$",
         sub_id
     ):
+
         return None
+
 
     return sub_id
 
@@ -224,8 +202,6 @@ def extract_sub_id(url):
 
 @app.route("/")
 def index():
-
-    cleanup_expired_subscriptions()
 
     return "创建成功"
 
@@ -239,9 +215,6 @@ def index():
     methods=["GET", "POST"]
 )
 def admin():
-
-    # 清理过期订阅
-    cleanup_expired_subscriptions()
 
     # =====================
     # 打开后台
@@ -258,7 +231,8 @@ def admin():
 
 <meta charset="UTF-8">
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
 
 <title>Subscription Generator</title>
 
@@ -291,15 +265,6 @@ color:#666;
 "
 >
 输入原始订阅链接，生成订阅文件。
-</p>
-
-<p
-style="
-color:#999;
-font-size:13px;
-"
->
-订阅有效期：30天，超过30天后自动删除。
 </p>
 
 <form method="POST">
@@ -355,7 +320,10 @@ cursor:pointer;
 
 
     if not upstream_url.startswith(
-        ("http://", "https://")
+        (
+            "http://",
+            "https://"
+        )
     ):
 
         return (
@@ -382,12 +350,35 @@ cursor:pointer;
 
 
     # =====================
-    # 保存映射
+    # 读取数据
     # =====================
 
     subscriptions = load_subscriptions()
 
-    subscriptions[sub_id] = upstream_url
+
+    # =====================
+    # 清理30天过期订阅
+    # =====================
+
+    subscriptions, changed = cleanup_expired(
+        subscriptions
+    )
+
+
+    # =====================
+    # 保存当前订阅
+    # =====================
+
+    subscriptions[sub_id] = {
+
+        "url": upstream_url,
+
+        "created_at": int(
+            time.time()
+        )
+
+    }
+
 
     save_subscriptions(
         subscriptions
@@ -395,26 +386,13 @@ cursor:pointer;
 
 
     # =====================
-    # 保存创建时间
-    # =====================
-
-    expiry_data = load_expiry()
-
-    expiry_data[sub_id] = (
-        datetime.now(timezone.utc)
-        .isoformat()
-    )
-
-    save_expiry(
-        expiry_data
-    )
-
-
-    # =====================
     # 获取当前 CloudBase 地址
     # =====================
 
-    base_url = request.host_url.rstrip("/")
+    base_url = request.host_url.rstrip(
+        "/"
+    )
+
 
     proxy_url = (
         base_url
@@ -425,12 +403,6 @@ cursor:pointer;
 
     # =====================
     # 生成文字变式
-    #
-    # https://xxx.com/s/xxx
-    #
-    # ↓
-    #
-    # https:/#/xxx.#com/s/xxx
     # =====================
 
     display_url = proxy_url.replace(
@@ -470,7 +442,9 @@ cursor:pointer;
     # =====================
 
     file_data = BytesIO(
-        txt_content.encode("utf-8")
+        txt_content.encode(
+            "utf-8"
+        )
     )
 
     file_data.seek(0)
@@ -499,8 +473,23 @@ cursor:pointer;
 )
 def subscription(sub_id):
 
+    subscriptions = load_subscriptions()
+
+
+    # =====================
     # 清理过期订阅
-    subscriptions = cleanup_expired_subscriptions()
+    # =====================
+
+    subscriptions, changed = cleanup_expired(
+        subscriptions
+    )
+
+
+    if changed:
+
+        save_subscriptions(
+            subscriptions
+        )
 
 
     # =====================
@@ -512,9 +501,32 @@ def subscription(sub_id):
         abort(404)
 
 
-    upstream_url = subscriptions[
+    item = subscriptions[
         sub_id
     ]
+
+
+    # =====================
+    # 兼容旧数据
+    # =====================
+
+    if isinstance(
+        item,
+        str
+    ):
+
+        upstream_url = item
+
+    else:
+
+        upstream_url = item.get(
+            "url"
+        )
+
+
+    if not upstream_url:
+
+        abort(404)
 
 
     # =====================
@@ -540,17 +552,12 @@ def subscription(sub_id):
         r.raise_for_status()
 
 
-        # =====================
-        # 原样返回
-        # =====================
-
         response = Response(
             r.content,
             status=200
         )
 
 
-        # 保留上游 Content-Type
         if r.headers.get(
             "Content-Type"
         ):
@@ -565,13 +572,17 @@ def subscription(sub_id):
 
             response.headers[
                 "Content-Type"
-            ] = "text/plain; charset=utf-8"
+            ] = (
+                "text/plain; charset=utf-8"
+            )
 
 
-        # 防止缓存导致刷新拿到旧订阅
         response.headers[
             "Cache-Control"
-        ] = "no-store, no-cache, must-revalidate"
+        ] = (
+            "no-store, no-cache, "
+            "must-revalidate"
+        )
 
 
         response.headers[
@@ -587,7 +598,9 @@ def subscription(sub_id):
         return Response(
             "Upstream subscription request failed",
             status=502,
-            content_type="text/plain; charset=utf-8"
+            content_type=(
+                "text/plain; charset=utf-8"
+            )
         )
 
 
@@ -603,6 +616,7 @@ if __name__ == "__main__":
             "80"
         )
     )
+
 
     app.run(
         host="0.0.0.0",
