@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import time
 import requests
 
 from io import BytesIO
@@ -15,51 +14,9 @@ from flask import (
     send_file
 )
 
-from qcloud_cos import CosConfig
-from qcloud_cos import CosS3Client
-
-
 app = Flask(__name__)
 
-
-# =========================
-# COS 配置
-# =========================
-
-COS_SECRET_ID = os.environ.get(
-    "COS_SECRET_ID",
-    ""
-)
-
-COS_SECRET_KEY = os.environ.get(
-    "COS_SECRET_KEY",
-    ""
-)
-
-COS_REGION = os.environ.get(
-    "COS_REGION",
-    "ap-shanghai"
-)
-
-COS_BUCKET = os.environ.get(
-    "COS_BUCKET",
-    "7465-test-d9g7i55l98fd491bf-1432414508"
-)
-
-COS_FILE = "subscriptions.json"
-
-
-# =========================
-# 初始化 COS
-# =========================
-
-config = CosConfig(
-    Region=COS_REGION,
-    SecretId=COS_SECRET_ID,
-    SecretKey=COS_SECRET_KEY
-)
-
-cos_client = CosS3Client(config)
+DATA_FILE = "subscriptions.json"
 
 
 # =========================
@@ -68,22 +25,18 @@ cos_client = CosS3Client(config)
 
 def load_subscriptions():
 
+    if not os.path.exists(DATA_FILE):
+        return {}
+
     try:
 
-        response = cos_client.get_object(
-            Bucket=COS_BUCKET,
-            Key=COS_FILE
-        )
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
 
-        content = response[
-            "Body"
-        ].get_raw_stream().read()
-
-        data = json.loads(
-            content.decode("utf-8")
-        )
-
-        return data
+            return json.load(f)
 
     except Exception:
 
@@ -96,69 +49,18 @@ def load_subscriptions():
 
 def save_subscriptions(data):
 
-    content = json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2
-    )
+    with open(
+        DATA_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
-    cos_client.put_object(
-        Bucket=COS_BUCKET,
-        Key=COS_FILE,
-        Body=content.encode("utf-8")
-    )
-
-
-# =========================
-# 清理超过30天的订阅
-# =========================
-
-def cleanup_expired(subscriptions):
-
-    now = int(time.time())
-
-    expire_seconds = 30 * 24 * 60 * 60
-
-    expired_ids = []
-
-
-    for sub_id, value in subscriptions.items():
-
-        # 兼容旧格式
-        if isinstance(
-            value,
-            str
-        ):
-
-            continue
-
-
-        created_at = value.get(
-            "created_at",
-            0
+        json.dump(
+            data,
+            f,
+            ensure_ascii=False,
+            indent=2
         )
-
-
-        if (
-            now - created_at
-            >= expire_seconds
-        ):
-
-            expired_ids.append(
-                sub_id
-            )
-
-
-    for sub_id in expired_ids:
-
-        del subscriptions[
-            sub_id
-        ]
-
-
-    return subscriptions, bool(
-        expired_ids
-    )
 
 
 # =========================
@@ -171,27 +73,19 @@ def extract_sub_id(url):
 
     path = parsed.path.rstrip("/")
 
-
     if not path:
-
         return None
-
 
     sub_id = path.split("/")[-1]
 
-
     if not sub_id:
-
         return None
-
 
     if not re.match(
         r"^[A-Za-z0-9_-]+$",
         sub_id
     ):
-
         return None
-
 
     return sub_id
 
@@ -215,10 +109,6 @@ def index():
     methods=["GET", "POST"]
 )
 def admin():
-
-    # =====================
-    # 打开后台
-    # =====================
 
     if request.method == "GET":
 
@@ -308,22 +198,13 @@ cursor:pointer;
 </html>
 """
 
-
-    # =====================
-    # 获取原始链接
-    # =====================
-
     upstream_url = request.form.get(
         "url",
         ""
     ).strip()
 
-
     if not upstream_url.startswith(
-        (
-            "http://",
-            "https://"
-        )
+        ("http://", "https://")
     ):
 
         return (
@@ -331,15 +212,9 @@ cursor:pointer;
             400
         )
 
-
-    # =====================
-    # 提取 ID
-    # =====================
-
     sub_id = extract_sub_id(
         upstream_url
     )
-
 
     if not sub_id:
 
@@ -348,51 +223,15 @@ cursor:pointer;
             400
         )
 
-
-    # =====================
-    # 读取数据
-    # =====================
-
     subscriptions = load_subscriptions()
 
-
-    # =====================
-    # 清理30天过期订阅
-    # =====================
-
-    subscriptions, changed = cleanup_expired(
-        subscriptions
-    )
-
-
-    # =====================
-    # 保存当前订阅
-    # =====================
-
-    subscriptions[sub_id] = {
-
-        "url": upstream_url,
-
-        "created_at": int(
-            time.time()
-        )
-
-    }
-
+    subscriptions[sub_id] = upstream_url
 
     save_subscriptions(
         subscriptions
     )
 
-
-    # =====================
-    # 获取当前 CloudBase 地址
-    # =====================
-
-    base_url = request.host_url.rstrip(
-        "/"
-    )
-
+    base_url = request.host_url.rstrip("/")
 
     proxy_url = (
         base_url
@@ -400,17 +239,11 @@ cursor:pointer;
         + sub_id
     )
 
-
-    # =====================
-    # 生成文字变式
-    # =====================
-
     display_url = proxy_url.replace(
         "://",
         ":/#/",
         1
     )
-
 
     if ".com/" in display_url:
 
@@ -419,11 +252,6 @@ cursor:pointer;
             ".#com/",
             1
         )
-
-
-    # =====================
-    # TXT 内容
-    # =====================
 
     txt_content = (
         "CloudBase订阅地址：\n"
@@ -436,24 +264,15 @@ cursor:pointer;
         "账号就是网址，不是打开网站里的内容）\n"
     )
 
-
-    # =====================
-    # 内存生成 TXT
-    # =====================
-
     file_data = BytesIO(
-        txt_content.encode(
-            "utf-8"
-        )
+        txt_content.encode("utf-8")
     )
 
     file_data.seek(0)
 
-
     filename = (
         f"{sub_id}.txt"
     )
-
 
     return send_file(
         file_data,
@@ -475,63 +294,13 @@ def subscription(sub_id):
 
     subscriptions = load_subscriptions()
 
-
-    # =====================
-    # 清理过期订阅
-    # =====================
-
-    subscriptions, changed = cleanup_expired(
-        subscriptions
-    )
-
-
-    if changed:
-
-        save_subscriptions(
-            subscriptions
-        )
-
-
-    # =====================
-    # 检查 ID
-    # =====================
-
     if sub_id not in subscriptions:
 
         abort(404)
 
-
-    item = subscriptions[
+    upstream_url = subscriptions[
         sub_id
     ]
-
-
-    # =====================
-    # 兼容旧数据
-    # =====================
-
-    if isinstance(
-        item,
-        str
-    ):
-
-        upstream_url = item
-
-    else:
-
-        upstream_url = item.get(
-            "url"
-        )
-
-
-    if not upstream_url:
-
-        abort(404)
-
-
-    # =====================
-    # 请求原始订阅
-    # =====================
 
     try:
 
@@ -548,15 +317,12 @@ def subscription(sub_id):
             }
         )
 
-
         r.raise_for_status()
-
 
         response = Response(
             r.content,
             status=200
         )
-
 
         if r.headers.get(
             "Content-Type"
@@ -572,35 +338,24 @@ def subscription(sub_id):
 
             response.headers[
                 "Content-Type"
-            ] = (
-                "text/plain; charset=utf-8"
-            )
-
+            ] = "text/plain; charset=utf-8"
 
         response.headers[
             "Cache-Control"
-        ] = (
-            "no-store, no-cache, "
-            "must-revalidate"
-        )
-
+        ] = "no-store, no-cache, must-revalidate"
 
         response.headers[
             "Pragma"
         ] = "no-cache"
 
-
         return response
-
 
     except requests.RequestException:
 
         return Response(
             "Upstream subscription request failed",
             status=502,
-            content_type=(
-                "text/plain; charset=utf-8"
-            )
+            content_type="text/plain; charset=utf-8"
         )
 
 
@@ -616,7 +371,6 @@ if __name__ == "__main__":
             "80"
         )
     )
-
 
     app.run(
         host="0.0.0.0",
