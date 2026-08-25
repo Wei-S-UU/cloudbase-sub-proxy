@@ -5,6 +5,8 @@ import requests
 
 from io import BytesIO
 from urllib.parse import urlparse
+from qcloud_cos import CosConfig, CosS3Client
+from qcloud_cos.cos_exception import CosServiceError
 
 from flask import (
     Flask,
@@ -17,57 +19,53 @@ from flask import (
 app = Flask(__name__)
 
 # =========================
-# 持久化存储路径配置
+# 腾讯云 COS 配置
 # =========================
-# 优先读取环境变量 MOUNT_DIR，默认为 /mnt/cos（与云托管控制台挂载路径一致）
-MOUNT_DIR = os.environ.get("MOUNT_DIR", "/mnt/cos")
-DATA_FILE = os.path.join(MOUNT_DIR, "subscriptions.json")
+SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "你的SecretId")
+SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "你的SecretKey")
+REGION = os.environ.get("COS_REGION", "ap-shanghai")
+BUCKET = os.environ.get("COS_BUCKET", "sub-proxy-1432414508")
+FILE_KEY = "subscriptions.json"
+
+config = CosConfig(Region=REGION, SecretId=SECRET_ID, SecretKey=SECRET_KEY)
+client = CosS3Client(config)
 
 
 # =========================
-# 读取订阅数据
+# 远程读取 COS 订阅数据
 # =========================
-
 def load_subscriptions():
-    if not os.path.exists(DATA_FILE):
-        return {}
-
     try:
-        with open(
-            DATA_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-            return json.load(f)
+        response = client.get_object(
+            Bucket=BUCKET,
+            Key=FILE_KEY
+        )
+        content = response['Body'].read().decode('utf-8')
+        return json.loads(content)
+    except CosServiceError as e:
+        # 文件不存在时返回空字典
+        if e.get_error_code() == "NoSuchResource" or e.get_status_code() == 404:
+            return {}
+        return {}
     except Exception:
         return {}
 
 
 # =========================
-# 保存订阅数据
+# 远程保存 COS 订阅数据
 # =========================
-
 def save_subscriptions(data):
-    # 确保挂载目录存在（防止本地调试或路径未自动创建时报错）
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-
-    with open(
-        DATA_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+    body_data = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+    client.put_object(
+        Bucket=BUCKET,
+        Key=FILE_KEY,
+        Body=body_data
+    )
 
 
 # =========================
 # 提取原链接最后一段
 # =========================
-
 def extract_sub_id(url):
     parsed = urlparse(url)
     path = parsed.path.rstrip("/")
@@ -87,7 +85,6 @@ def extract_sub_id(url):
 # =========================
 # 首页
 # =========================
-
 @app.route("/")
 def index():
     return "创建成功"
@@ -96,11 +93,7 @@ def index():
 # =========================
 # 管理后台
 # =========================
-
-@app.route(
-    "/admin",
-    methods=["GET", "POST"]
-)
+@app.route("/admin", methods=["GET", "POST"])
 def admin():
     if request.method == "GET":
         return """
@@ -167,11 +160,7 @@ def admin():
 # =========================
 # 订阅接口
 # =========================
-
-@app.route(
-    "/s/<sub_id>",
-    methods=["GET"]
-)
+@app.route("/s/<sub_id>", methods=["GET"])
 def subscription(sub_id):
     subscriptions = load_subscriptions()
 
@@ -217,7 +206,6 @@ def subscription(sub_id):
 # =========================
 # 启动
 # =========================
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "80"))
     app.run(host="0.0.0.0", port=port)
