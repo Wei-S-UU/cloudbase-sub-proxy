@@ -1,13 +1,11 @@
 import os
 import json
 import re
+import traceback
 import requests
 
 from io import BytesIO
 from urllib.parse import urlparse
-from qcloud_cos import CosConfig, CosS3Client
-from qcloud_cos.cos_exception import CosServiceError
-
 from flask import (
     Flask,
     Response,
@@ -19,48 +17,84 @@ from flask import (
 app = Flask(__name__)
 
 # =========================
-# 腾讯云 COS 配置
+# 腾讯云 COS 配置与初始化
 # =========================
-SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "你的SecretId")
-SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "你的SecretKey")
-REGION = os.environ.get("COS_REGION", "ap-shanghai")
-BUCKET = os.environ.get("COS_BUCKET", "sub-proxy-1432414508")
+SECRET_ID = os.environ.get("TENCENT_SECRET_ID", "").strip()
+SECRET_KEY = os.environ.get("TENCENT_SECRET_KEY", "").strip()
+REGION = os.environ.get("COS_REGION", "ap-shanghai").strip()
+BUCKET = os.environ.get("COS_BUCKET", "sub-proxy-1432414508").strip()
 FILE_KEY = "subscriptions.json"
 
-config = CosConfig(Region=REGION, SecretId=SECRET_ID, SecretKey=SECRET_KEY)
-client = CosS3Client(config)
+cos_client = None
+
+if SECRET_ID and SECRET_KEY:
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+        config = CosConfig(Region=REGION, SecretId=SECRET_ID, SecretKey=SECRET_KEY)
+        cos_client = CosS3Client(config)
+        print(f"[COS] 客户端初始化成功 -> Bucket: {BUCKET}, Region: {REGION}", flush=True)
+    except Exception as e:
+        print(f"[COS Init Error] 初始化失败: {str(e)}", flush=True)
+else:
+    print("[COS Warning] 未检测到完整的 TENCENT_SECRET_ID / TENCENT_SECRET_KEY 环境变量，将临时使用本地存储模式", flush=True)
 
 
 # =========================
-# 远程读取 COS 订阅数据
+# 读取订阅数据
 # =========================
 def load_subscriptions():
-    try:
-        response = client.get_object(
-            Bucket=BUCKET,
-            Key=FILE_KEY
-        )
-        content = response['Body'].read().decode('utf-8')
-        return json.loads(content)
-    except CosServiceError as e:
-        # 文件不存在时返回空字典
-        if e.get_error_code() == "NoSuchResource" or e.get_status_code() == 404:
+    if cos_client:
+        try:
+            response = cos_client.get_object(
+                Bucket=BUCKET,
+                Key=FILE_KEY
+            )
+            content = response['Body'].read().decode('utf-8')
+            return json.loads(content)
+        except Exception as e:
+            err_msg = str(e)
+            if "NoSuchResource" in err_msg or "404" in err_msg or "NoSuchKey" in err_msg:
+                print("[COS] subscriptions.json 尚不存在，使用初始空数据", flush=True)
+                return {}
+            print(f"[COS Load Error] 读取失败: {err_msg}", flush=True)
             return {}
-        return {}
-    except Exception:
+    else:
+        # 本地备用读取
+        if os.path.exists(FILE_KEY):
+            try:
+                with open(FILE_KEY, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return {}
         return {}
 
 
 # =========================
-# 远程保存 COS 订阅数据
+# 保存订阅数据
 # =========================
 def save_subscriptions(data):
-    body_data = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-    client.put_object(
-        Bucket=BUCKET,
-        Key=FILE_KEY,
-        Body=body_data
-    )
+    if cos_client:
+        try:
+            body_data = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+            cos_client.put_object(
+                Bucket=BUCKET,
+                Key=FILE_KEY,
+                Body=body_data
+            )
+            print(f"[COS] 数据成功保存到 COS 存储桶 {BUCKET}/{FILE_KEY}", flush=True)
+            return True, None
+        except Exception as e:
+            err_details = traceback.format_exc()
+            print(f"[COS Save Error] 写入 COS 失败:\n{err_details}", flush=True)
+            return False, f"COS 写入失败: {str(e)}"
+    else:
+        try:
+            with open(FILE_KEY, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print("[Local] 数据已保存至本地文件", flush=True)
+            return True, None
+        except Exception as e:
+            return False, f"本地写入失败: {str(e)}"
 
 
 # =========================
@@ -87,7 +121,7 @@ def extract_sub_id(url):
 # =========================
 @app.route("/")
 def index():
-    return "创建成功"
+    return "服务运行正常"
 
 
 # =========================
@@ -110,7 +144,7 @@ def admin():
 <p style="color:#666;">输入原始订阅链接，生成订阅文件。</p>
 <form method="POST">
 <input type="url" name="url" placeholder="粘贴原始订阅链接" required style="width:100%;box-sizing:border-box;padding:12px;font-size:15px;border:1px solid #ccc;border-radius:6px;margin-bottom:15px;">
-<button type="submit" style="width:100%;padding:12px;font-size:15px;border:0;border-radius:6px;cursor:pointer;">生成并下载</button>
+<button type="submit" style="width:100%;padding:12px;font-size:15px;border:0;border-radius:6px;cursor:pointer;background:#006eff;color:#fff;">生成并下载</button>
 </form>
 </div>
 </body>
@@ -120,15 +154,18 @@ def admin():
     upstream_url = request.form.get("url", "").strip()
 
     if not upstream_url.startswith(("http://", "https://")):
-        return ("链接格式错误", 400)
+        return ("链接格式错误，必须以 http:// 或 https:// 开头", 400)
 
     sub_id = extract_sub_id(upstream_url)
     if not sub_id:
-        return ("无法提取原始链接最后一段 ID", 400)
+        return ("无法提取原始链接最后一段 ID，请检查链接格式", 400)
 
     subscriptions = load_subscriptions()
     subscriptions[sub_id] = upstream_url
-    save_subscriptions(subscriptions)
+    success, err = save_subscriptions(subscriptions)
+
+    if not success:
+        return (f"存储数据失败，原因: {err}。请检查云托管环境变量与 CAM 权限。", 500)
 
     base_url = request.host_url.rstrip("/")
     proxy_url = f"{base_url}/s/{sub_id}"
@@ -195,7 +232,8 @@ def subscription(sub_id):
 
         return response
 
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"[Proxy Error] 拉取上游订阅失败: {str(e)}", flush=True)
         return Response(
             "Upstream subscription request failed",
             status=502,
