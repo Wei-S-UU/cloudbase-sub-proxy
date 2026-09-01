@@ -168,18 +168,26 @@ def admin():
         return (f"存储数据失败，原因: {err}。请检查云托管环境变量与 CAM 权限。", 500)
 
     base_url = request.host_url.rstrip("/")
-    proxy_url = f"{base_url}/s/{sub_id}"
+    sub_url = f"{base_url}/s/{sub_id}"
+    clash_url = f"{base_url}/c/{sub_id}"
 
-    display_url = proxy_url.replace("://", ":/#/", 1)
-    if ".com/" in display_url:
-        display_url = display_url.replace(".com/", ".#com/", 1)
+    display_sub = sub_url.replace("://", ":/#/", 1)
+    if ".com/" in display_sub:
+        display_sub = display_sub.replace(".com/", ".#com/", 1)
+
+    display_clash = clash_url.replace("://", ":/#/", 1)
+    if ".com/" in display_clash:
+        display_clash = display_clash.replace(".com/", ".#com/", 1)
 
     txt_content = (
-        "CloudBase订阅地址：\n"
-        f"{proxy_url}\n\n"
-        "软件填写格式：\n"
-        f"{display_url}\n\n"
-        "填入软件中（将上行的 两个# 去除掉 账号就是网址，不是打开网站里的内容）\n"
+        "【小火箭 / 通用订阅 (Base64)】\n"
+        f"直连地址：{sub_url}\n"
+        f"防封格式：{display_sub}\n\n"
+        "------------------------------------\n"
+        "【Clash / Mihomo 专属订阅 (YAML)】\n"
+        f"直连地址：{clash_url}\n"
+        f"防封格式：{display_clash}\n\n"
+        "说明：填入对应软件时，将防封格式中的两个 # 去除即可。\n"
     )
 
     file_data = BytesIO(txt_content.encode("utf-8"))
