@@ -59,7 +59,6 @@ def load_subscriptions():
             print(f"[COS Load Error] 读取失败: {err_msg}", flush=True)
             return {}
     else:
-        # 本地备用读取
         if os.path.exists(FILE_KEY):
             try:
                 with open(FILE_KEY, "r", encoding="utf-8") as f:
@@ -98,7 +97,7 @@ def save_subscriptions(data):
 
 
 # =========================
-# 提取原链接最后一段
+# 提取原链接最后一段 ID
 # =========================
 def extract_sub_id(url):
     parsed = urlparse(url)
@@ -117,11 +116,11 @@ def extract_sub_id(url):
 
 
 # =========================
-# 首页
+# 首页 (伪装展示)
 # =========================
 @app.route("/")
 def index():
-    return "服务运行正常"
+    return Response('{"code":0,"message":"Gateway Service Ready"}', mimetype="application/json")
 
 
 # =========================
@@ -136,12 +135,12 @@ def admin():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Subscription Generator</title>
+<title>Data Sync Manager</title>
 </head>
 <body style="margin:0;background:#f5f5f5;font-family:Arial,sans-serif;">
 <div style="max-width:700px;margin:80px auto;background:white;padding:35px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-<h2>订阅生成器</h2>
-<p style="color:#666;">输入原始订阅链接，生成订阅文件。</p>
+<h2>订阅分发管理</h2>
+<p style="color:#666;">输入原始订阅链接，自动生成业务掩码链接。</p>
 <form method="POST">
 <input type="url" name="url" placeholder="粘贴原始订阅链接" required style="width:100%;box-sizing:border-box;padding:12px;font-size:15px;border:1px solid #ccc;border-radius:6px;margin-bottom:15px;">
 <button type="submit" style="width:100%;padding:12px;font-size:15px;border:0;border-radius:6px;cursor:pointer;background:#006eff;color:#fff;">生成并下载</button>
@@ -168,26 +167,24 @@ def admin():
         return (f"存储数据失败，原因: {err}。请检查云托管环境变量与 CAM 权限。", 500)
 
     base_url = request.host_url.rstrip("/")
-    sub_url = f"{base_url}/s/{sub_id}"
-    clash_url = f"{base_url}/c/{sub_id}"
+    sync_url = f"{base_url}/api/v1/sync/{sub_id}"
+    config_url = f"{base_url}/api/v1/config/{sub_id}"
 
-    display_sub = sub_url.replace("://", ":/#/", 1)
-    if ".com/" in display_sub:
-        display_sub = display_sub.replace(".com/", ".#com/", 1)
-
-    display_clash = clash_url.replace("://", ":/#/", 1)
-    if ".com/" in display_clash:
-        display_clash = display_clash.replace(".com/", ".#com/", 1)
+    def obfuscate(url):
+        d_url = url.replace("://", ":/#/", 1)
+        if ".com/" in d_url:
+            d_url = d_url.replace(".com/", ".#com/", 1)
+        return d_url
 
     txt_content = (
-        "【小火箭 / 通用订阅 (Base64)】\n"
-        f"直连地址：{sub_url}\n"
-        f"防封格式：{display_sub}\n\n"
+        "【小火箭 / 通用节点 (Base64)】\n"
+        f"直连地址：{sync_url}\n"
+        f"防封格式：{obfuscate(sync_url)}\n\n"
         "------------------------------------\n"
-        "【Clash / Mihomo 专属订阅 (YAML)】\n"
-        f"直连地址：{clash_url}\n"
-        f"防封格式：{display_clash}\n\n"
-        "说明：填入对应软件时，将防封格式中的两个 # 去除即可。\n"
+        "【Clash / Mihomo 专属 (YAML)】\n"
+        f"直连地址：{config_url}\n"
+        f"防封格式：{obfuscate(config_url)}\n\n"
+        "说明：填入对应客户端时，将防封格式中的两个 # 去除即可。\n"
     )
 
     file_data = BytesIO(txt_content.encode("utf-8"))
@@ -203,18 +200,17 @@ def admin():
 
 
 # =========================
-# 1. 小火箭 / 通用订阅接口 (拦截 Clash / Mihomo 访问)
+# 1. 业务数据同步接口 (小火箭/通用 Base64)
 # =========================
-@app.route("/s/<sub_id>", methods=["GET"])
+@app.route("/api/v1/sync/<sub_id>", methods=["GET"])
 def subscription(sub_id):
     client_ua = request.headers.get("User-Agent", "").lower()
     
-    # 严格拦截 Clash 客户端
+    # 严格拦截 Clash 内核访问
     if "clash" in client_ua or "mihomo" in client_ua:
-        return Response("Access Denied: Clash client is not allowed on this link.", status=403, content_type="text/plain; charset=utf-8")
+        return Response("Forbidden", status=403, content_type="text/plain; charset=utf-8")
 
     subscriptions = load_subscriptions()
-
     if sub_id not in subscriptions:
         abort(404)
 
@@ -235,46 +231,31 @@ def subscription(sub_id):
         r.raise_for_status()
 
         response = Response(r.content, status=200)
-
-        if r.headers.get("Content-Type"):
-            response.headers["Content-Type"] = r.headers["Content-Type"]
-        else:
-            response.headers["Content-Type"] = "text/plain; charset=utf-8"
-
+        response.headers["Content-Type"] = r.headers.get("Content-Type", "text/plain; charset=utf-8")
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
-
         return response
 
     except requests.RequestException as e:
-        print(f"[Proxy Error] 拉取上游订阅失败: {str(e)}", flush=True)
-        return Response(
-            "Upstream subscription request failed",
-            status=502,
-            content_type="text/plain; charset=utf-8"
-        )
+        print(f"[Proxy Error] 拉取上游失败: {str(e)}", flush=True)
+        return Response("Bad Gateway", status=502, content_type="text/plain; charset=utf-8")
 
 
 # =========================
-# 2. Clash 专属订阅接口 (拦截 小火箭 / 普通浏览器 偷用)
+# 2. 系统配置分发接口 (Clash/Mihomo YAML)
 # =========================
-@app.route("/c/<sub_id>", methods=["GET"])
+@app.route("/api/v1/config/<sub_id>", methods=["GET"])
 def clash_subscription(sub_id):
     client_ua = request.headers.get("User-Agent", "").lower()
     
-    # 严格拦截 小火箭 (Shadowrocket)
-    if "shadowrocket" in client_ua:
-        return Response("Access Denied: Shadowrocket is not allowed on this link.", status=403, content_type="text/plain; charset=utf-8")
-    
-    # 限制仅允许 Clash / Mihomo 系列内核请求
-    if "clash" not in client_ua and "mihomo" not in client_ua:
-        return Response("Access Denied: Only Clash / Mihomo clients are allowed.", status=403, content_type="text/plain; charset=utf-8")
+    # 拦截小火箭与普通网页浏览器
+    if "shadowrocket" in client_ua or ("clash" not in client_ua and "mihomo" not in client_ua):
+        return Response("Forbidden", status=403, content_type="text/plain; charset=utf-8")
 
     upstream_clash_template = os.environ.get("UPSTREAM_CLASH", "").strip()
     if not upstream_clash_template:
-        return Response("UPSTREAM_CLASH not configured", status=500, content_type="text/plain; charset=utf-8")
+        return Response("Configuration Missing", status=500, content_type="text/plain; charset=utf-8")
 
-    # 替换模板中的 {id} 占位符或拼接末尾
     if "{id}" in upstream_clash_template:
         clash_upstream_url = upstream_clash_template.replace("{id}", sub_id)
     elif "{}" in upstream_clash_template:
@@ -286,31 +267,19 @@ def clash_subscription(sub_id):
         r = requests.get(
             clash_upstream_url,
             timeout=20,
-            headers={
-                "User-Agent": request.headers.get("User-Agent", "Clash/1.0")
-            }
+            headers={"User-Agent": request.headers.get("User-Agent", "Clash/1.0")}
         )
         r.raise_for_status()
 
         response = Response(r.content, status=200)
-
-        if r.headers.get("Content-Type"):
-            response.headers["Content-Type"] = r.headers["Content-Type"]
-        else:
-            response.headers["Content-Type"] = "text/plain; charset=utf-8"
-
+        response.headers["Content-Type"] = r.headers.get("Content-Type", "text/plain; charset=utf-8")
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
-
         return response
 
     except requests.RequestException as e:
-        print(f"[Clash Proxy Error] 拉取 Clash 上游订阅失败: {str(e)}", flush=True)
-        return Response(
-            "Upstream Clash subscription request failed",
-            status=502,
-            content_type="text/plain; charset=utf-8"
-        )
+        print(f"[Clash Proxy Error] 拉取 Clash 上游失败: {str(e)}", flush=True)
+        return Response("Bad Gateway", status=502, content_type="text/plain; charset=utf-8")
 
 
 # =========================
