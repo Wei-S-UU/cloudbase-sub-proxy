@@ -195,10 +195,16 @@ def admin():
 
 
 # =========================
-# 订阅接口
+# 1. 小火箭 / 通用订阅接口 (拦截 Clash / Mihomo 访问)
 # =========================
 @app.route("/s/<sub_id>", methods=["GET"])
 def subscription(sub_id):
+    client_ua = request.headers.get("User-Agent", "").lower()
+    
+    # 严格拦截 Clash 客户端
+    if "clash" in client_ua or "mihomo" in client_ua:
+        return Response("Access Denied: Clash client is not allowed on this link.", status=403, content_type="text/plain; charset=utf-8")
+
     subscriptions = load_subscriptions()
 
     if sub_id not in subscriptions:
@@ -236,6 +242,64 @@ def subscription(sub_id):
         print(f"[Proxy Error] 拉取上游订阅失败: {str(e)}", flush=True)
         return Response(
             "Upstream subscription request failed",
+            status=502,
+            content_type="text/plain; charset=utf-8"
+        )
+
+
+# =========================
+# 2. Clash 专属订阅接口 (拦截 小火箭 / 普通浏览器 偷用)
+# =========================
+@app.route("/c/<sub_id>", methods=["GET"])
+def clash_subscription(sub_id):
+    client_ua = request.headers.get("User-Agent", "").lower()
+    
+    # 严格拦截 小火箭 (Shadowrocket)
+    if "shadowrocket" in client_ua:
+        return Response("Access Denied: Shadowrocket is not allowed on this link.", status=403, content_type="text/plain; charset=utf-8")
+    
+    # 限制仅允许 Clash / Mihomo 系列内核请求
+    if "clash" not in client_ua and "mihomo" not in client_ua:
+        return Response("Access Denied: Only Clash / Mihomo clients are allowed.", status=403, content_type="text/plain; charset=utf-8")
+
+    upstream_clash_template = os.environ.get("UPSTREAM_CLASH", "").strip()
+    if not upstream_clash_template:
+        return Response("UPSTREAM_CLASH not configured", status=500, content_type="text/plain; charset=utf-8")
+
+    # 替换模板中的 {id} 占位符或拼接末尾
+    if "{id}" in upstream_clash_template:
+        clash_upstream_url = upstream_clash_template.replace("{id}", sub_id)
+    elif "{}" in upstream_clash_template:
+        clash_upstream_url = upstream_clash_template.replace("{}", sub_id)
+    else:
+        clash_upstream_url = f"{upstream_clash_template.rstrip('/')}/{sub_id}"
+
+    try:
+        r = requests.get(
+            clash_upstream_url,
+            timeout=20,
+            headers={
+                "User-Agent": request.headers.get("User-Agent", "Clash/1.0")
+            }
+        )
+        r.raise_for_status()
+
+        response = Response(r.content, status=200)
+
+        if r.headers.get("Content-Type"):
+            response.headers["Content-Type"] = r.headers["Content-Type"]
+        else:
+            response.headers["Content-Type"] = "text/plain; charset=utf-8"
+
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+
+        return response
+
+    except requests.RequestException as e:
+        print(f"[Clash Proxy Error] 拉取 Clash 上游订阅失败: {str(e)}", flush=True)
+        return Response(
+            "Upstream Clash subscription request failed",
             status=502,
             content_type="text/plain; charset=utf-8"
         )
